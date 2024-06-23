@@ -1,122 +1,207 @@
-import os
+from __future__ import print_function
 import pickle
-import io
-from google.auth.exceptions import GoogleAuthError
+import os.path
+from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 
-# Define the scopes required
-SCOPES = [
-    'https://www.googleapis.com/auth/classroom.courses.readonly',
-    'https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly',
-    'https://www.googleapis.com/auth/drive.readonly'
-]
-
-def download_file(service, file_id, file_name, download_folder):
-    request = service.files().get_media(fileId=file_id)
-    fh = io.FileIO(os.path.join(download_folder, file_name), 'wb')
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-        print(f"Download {int(status.progress() * 100)}%.")
+import io
+import os
+import os.path
+from os import path
+import pprint
 
 def main():
-    creds = None
-    # Ensure reauthentication by deleting the token.pickle file if it exists
-    if os.path.exists('token.pickle'):
-        os.remove('token.pickle')
 
-    # The file token.pickle stores the user's access and refresh tokens, and is
-    # created automatically when the authorization flow completes for the first time.
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-    # If there are no (valid) credentials available, let the user log in.
+    service = get_classroom_service()
+    courses = service.courses().list(pageSize=1).execute()
+    for course in courses['courses']:
+        print(course['name'])
+    
+    downd_files=list()
+
+    for course in courses['courses']:
+
+        course_name = course['name']
+        course_id = course['id']
+        print("Downloading files for course : ", course_name)
+        if not (path.exists(course_name)):
+            os.mkdir('./' + course_name)
+            os.mkdir('./' +course_name+ "/cours")
+            os.mkdir('./' + course_name+"/td")
+        else:
+            print("{} Already exists ".format(course_name))
+
+        anoncs = service.courses().announcements().list(
+            courseId=course_id).execute()
+        work = service.courses().courseWork().list(
+            courseId=course_id).execute()
+
+        downd_files = downd_files + download_annonc_files(anoncs, course_name)
+        downd_files = downd_files + download_works_files(work, course_name)
+    pprint.pprint(downd_files)
+
+def get_classroom_service():
+    SCOPES = [
+        'https://www.googleapis.com/auth/classroom.courses.readonly',
+        'https://www.googleapis.com/auth/classroom.announcements.readonly',
+        'https://www.googleapis.com/auth/classroom.student-submissions.me.readonly'
+    ]
+    creds = None
+    if os.path.exists('classroom-token.json'):
+        creds = Credentials.from_authorized_user_file('classroom-token.json', SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            print("Loading client secrets from file...")
             flow = InstalledAppFlow.from_client_secrets_file(
                 'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=8080)  # Specify a port here
-        # Save the credentials for the next run
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
-
+            creds = flow.run_local_server(port=0)
+        with open('classroom-token.json', 'w') as token:
+            token.write(creds.to_json())
     try:
-        classroom_service = build('classroom', 'v1', credentials=creds)
-        drive_service = build('drive', 'v3', credentials=creds)
+        service = build('classroom', 'v1', credentials=creds)
+        return service
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+        return None
 
-        # Fetch courses
-        try:
-            courses_response = classroom_service.courses().list().execute()
-            courses = courses_response.get('courses', [])
-            
-            if not courses:
-                print('No courses found.')
-                return
-            
-            # Print available courses and their IDs
-            print('Available courses:')
-            for course in courses:
-                print(f'{course["name"]} - {course["id"]}')
-            
-            # Prompt user to enter a course ID
-            selected_course_id = input('Enter the numerical course ID you want to download materials from: ')
-            
-            # Find the selected course
-            selected_course = next((course for course in courses if course['id'] == selected_course_id), None)
-            
-            if not selected_course:
-                print('Course not found.')
-                return
-            
-            print(f'Selected course: {selected_course["name"]}')
-            
-            # Prompt user to enter a coursework ID
-            selected_coursework_id = input('Enter the coursework ID within the selected course: ')
-            
-            # Ask user what types of files to download
-            download_pdfs = input('Do you want to download PDFs? (yes/no): ').strip().lower() == 'yes'
-            download_videos = input('Do you want to download videos? (yes/no): ').strip().lower() == 'yes'
-            
-            # Fetch coursework for the selected course
-            coursework_response = classroom_service.courses().courseWork().list(courseId=selected_course_id).execute()
-            coursework = coursework_response.get('courseWork', [])
-            
-            if not coursework:
-                print(f'No coursework found for course: {selected_course["name"]}')
-                return
-            
-            # Process and download materials for the specific coursework
-            selected_coursework = next((work for work in coursework if work['id'] == selected_coursework_id), None)
-            
-            if not selected_coursework:
-                print('Coursework not found.')
-                return
-            
-            if 'materials' in selected_coursework:
-                for material in selected_coursework['materials']:
-                    if 'driveFile' in material:
-                        file_id = material['driveFile']['driveFile']['id']
-                        file_name = material['driveFile']['driveFile']['title']
-                        mime_type = material['driveFile']['driveFile']['mimeType']
-                        if (download_pdfs and mime_type == 'application/pdf') or (download_videos and mime_type.startswith('video/')):
-                            print(f'Downloading {file_name} from Google Drive')
-                            download_file(drive_service, file_id, file_name, './downloads')
-            else:
-                print('No materials found for the selected coursework.')
-        except HttpError as err:
-            print(f'An HTTP error occurred: {err}')
-    except GoogleAuthError as auth_err:
-        print(f'An authentication error occurred: {auth_err}')
-    except Exception as e:
-        print(f'An error occurred: {e}')
+
+def get_drive_service():
+    SCOPES = ['https://www.googleapis.com/auth/drive']
+    creds = None
+    if os.path.exists('drive-token.json'):
+        creds = Credentials.from_authorized_user_file('drive-token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('drive-token.json', 'w') as token:
+            token.write(creds.to_json())
+    try:
+        service = build('drive', 'v3', credentials=creds)
+        return service
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+        return None
+
+def download_file(file_id, file_name, course_name):
+    service = get_drive_service()
+    if not service:
+        print('Drive service initialization failed.')
+        return
+    try:
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+            print(f"Download {int(status.progress() * 100)}%.")
+        fh.seek(0)
+        with open(os.path.join('./', course_name, file_name), 'wb') as f:
+            f.write(fh.read())
+            f.close()
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+
+
+
+def download_annonc_files(announcements, course_name):
+    annonc_list = announcements.keys()
+    downloaded = list()
+    if (len(annonc_list) != 0):
+        present_files = getListOfFiles(os.path.join('./', course_name))
+
+        for announcement in announcements['announcements']:
+            try:  #if this announcements contain a file then do this
+                for val in announcement['materials']:
+                    file_id = val['driveFile']['driveFile']['id']
+                    file_name = val['driveFile']['driveFile']['title']
+                    extension = (
+                        os.path.splitext(file_name)
+                    )[1]  #the extension exists in second elemnts of returned tuple
+                    path_str = os.path.join('./', course_name, file_name)
+
+                    if ((valid(extension[1:])) and (file_name not in present_files)) :
+                        print("DOWNLOADING " ,file_name)
+                        download_file(file_id, file_name, course_name)
+                        downloaded.append("Annonoucemet :  "+course_name +' : ' + file_name)                        
+                    elif (file_name in present_files):
+                        print(file_name, "already exists")
+                    elif not valid(extension[1:]):
+                        print('Unsupported file type: ', extension[1:] )
+                    else:
+                        print("Something went wrong")
+            except KeyError as e:
+                continue
+    return downloaded
+
+def download_works_files(works, course_name):
+    works_list = works.keys()
+    downloaded = list()
+    if (len(works_list) != 0):
+        present_files = getListOfFiles(os.path.join('./', course_name))
+
+        for work in works['courseWork']:
+            try:  #if this announcements contain a file then do this
+                for val in work['materials']:
+                    file_id = val['driveFile']['driveFile']['id']
+                    file_name = val['driveFile']['driveFile']['title']
+
+                    if (file_name[0:10] == "[Template]"):
+                        file_altern_link = val['driveFile']['driveFile']['alternateLink']
+
+                        file_id = file_altern_link[file_altern_link.find('=')+1:]
+                    extension = (
+                        os.path.splitext(file_name)
+                    )[1]  #the extension exists in second elemnts of returned tuple
+                    path_str = os.path.join('./', course_name, file_name)
+                    if valid(extension[1:]) and (file_name not in present_files) :
+                        print("DOWNLOADING " ,file_name)
+                        download_file(file_id, file_name, course_name)
+                        downloaded.append("Devoir :  "+course_name +' : ' + file_name)                        
+                    elif (file_name in present_files):
+                        print(file_name, "already exists")
+                    elif not valid(extension[1:]):
+                        print('Unsupported file type: ', extension[1:] )
+                    else:
+                        print("Something went wrong")
+
+            except KeyError as e:
+                continue
+    return downloaded
+
+
+def valid(ch):
+    return ch in [
+        'pdf', 'docx', 'pptx', 'png', 'jpg', 'html', 'css', 'js', 'java',
+        'class', 'txt', 'r', 'm', ' sql', 'doc', 'mp3', 'rar', 'zip', 'py', 'c'
+    ]
+
+
+def getListOfFiles(dirName):
+    # create a list of file and sub directories 
+    # names in the given directory 
+    listOfFile = os.listdir(dirName)
+    allFiles = list()
+    # Iterate over all the entries
+    for entry in listOfFile:
+        # Create full path
+        fullPath = os.path.join(dirName, entry)
+        # If entry is a directory then get the list of files in this directory 
+        if os.path.isdir(fullPath):
+            allFiles = allFiles + getListOfFiles(fullPath)
+        else:
+            allFiles.append(fullPath)
+                
+    return [ch[ch.rfind('/')+1:] for ch in allFiles]
 
 if __name__ == '__main__':
     main()
