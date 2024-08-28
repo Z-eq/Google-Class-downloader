@@ -43,7 +43,6 @@ def main():
         downd_files = downd_files + download_annonc_files(anoncs, course_name)
         downd_files = downd_files + download_works_files(work, course_name)
     pprint.pprint(downd_files)
-#Your scopes 
 def get_classroom_service():
     SCOPES = [
         'https://www.googleapis.com/auth/classroom.courses.readonly',
