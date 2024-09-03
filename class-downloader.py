@@ -10,7 +10,7 @@ from googleapiclient.errors import HttpError
 import io
 import pprint
 
-def main():
+#def main():
     service = get_classroom_service()
     courses = service.courses().list(pageSize=1).execute()
     for course in courses['courses']:
